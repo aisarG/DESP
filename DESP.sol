@@ -792,14 +792,15 @@ abstract contract Liquifier is Ownable, Manageable {
             owner(),
             block.timestamp
         );
-
-        // Fix the forever locked BNBs as per Certik's Safemoon audit
+        
         /**
-         * The swapAndLiquify function converts half of the contractTokenBalance DESP tokens to BNB. 
+         * @dev Fix issue with forever locked BNBs as per Certik's Safemoon audit:
+         *
+         * The swapAndLiquify function converts half of the contractTokenBalance SafeMoon tokens to BNB. 
          * For every swapAndLiquify function call, a small amount of BNB remains in the contract. 
          * This amount grows over time with the swapAndLiquify function being called throughout the life 
-         * of the contract. The DESP contract does not contain a method to withdraw these funds, 
-         * and the BNB will be locked in the DESP contract forever.
+         * of the contract. The SafeMoon contract does not contain a method to withdraw these funds, 
+         * and the BNB will be locked in the SafeMoon contract forever.
          */
         withdrawableBalance = address(this).balance;
         emit LiquidityAdded(tokenAmountSent, ethAmountSent, liquidity);
@@ -828,7 +829,7 @@ abstract contract Liquifier is Ownable, Manageable {
      *
      * Note: This addresses the contract flaw pointed out in the Certik Audit of Safemoon (SSL-03):
      * 
-     * The swapAndLiquify function converts half of the contractTokenBalance DESP tokens to BNB. 
+     * The swapAndLiquify function converts half of the contractTokenBalance SafeMoon tokens to BNB. 
      * For every swapAndLiquify function call, a small amount of BNB remains in the contract. 
      * This amount grows over time with the swapAndLiquify function being called 
      * throughout the life of the contract. The Safemoon contract does not contain a method 
