@@ -796,7 +796,7 @@ abstract contract Liquifier is Ownable, Manageable {
         /**
          * @dev Fix issue with forever locked BNBs as per Certik's Safemoon audit:
          *
-         * The swapAndLiquify function converts half of the contractTokenBalance SafeMoon tokens to BNB. 
+         * The swapAndLiquify function converts half of the contractTokenBalance tokens to BNB. 
          * For every swapAndLiquify function call, a small amount of BNB remains in the contract. 
          * This amount grows over time with the swapAndLiquify function being called throughout the life 
          * of the contract. The SafeMoon contract does not contain a method to withdraw these funds, 
@@ -829,7 +829,7 @@ abstract contract Liquifier is Ownable, Manageable {
      *
      * Note: This addresses the contract flaw pointed out in the Certik Audit of Safemoon (SSL-03):
      * 
-     * The swapAndLiquify function converts half of the contractTokenBalance SafeMoon tokens to BNB. 
+     * The swapAndLiquify function converts half of the contractTokenBalance tokens to BNB. 
      * For every swapAndLiquify function call, a small amount of BNB remains in the contract. 
      * This amount grows over time with the swapAndLiquify function being called 
      * throughout the life of the contract. The Safemoon contract does not contain a method 
