@@ -79,7 +79,6 @@ library Address {
 abstract contract Ownable is Context {
     address private _owner;
     address private _previousOwner;
-    uint256 private _lockTime;
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     constructor () {
         address msgSender = _msgSender();
@@ -101,21 +100,6 @@ abstract contract Ownable is Context {
         require(newOwner != address(0), "Ownable: new owner is the zero address");
         emit OwnershipTransferred(_owner, newOwner);
         _owner = newOwner;
-    }
-    function getUnlockTime() public view returns (uint256) {
-        return _lockTime;
-    }
-    function lock(uint256 time) public virtual onlyOwner {
-        _previousOwner = _owner;
-        _owner = address(0);
-        _lockTime = block.timestamp + time;
-        emit OwnershipTransferred(_owner, address(0));
-    }
-    function unlock() public virtual {
-        require(_previousOwner == msg.sender, "Only the previous owner can unlock onwership");
-        require(block.timestamp > _lockTime , "The contract is still locked");
-        emit OwnershipTransferred(_owner, _previousOwner);
-        _owner = _previousOwner;
     }
 }
 abstract contract Manageable is Context {
@@ -182,22 +166,12 @@ abstract contract Tokenomics {
     /**
      * @dev Set the maximum transaction amount allowed in a transfer.
      * 
-     * The default value is 1% of the total supply. 
-     * 
-     * NOTE: set the value to `TOTAL_SUPPLY` to have an unlimited max, i.e.
-     * `maxTransactionAmount = TOTAL_SUPPLY;`
      */
     uint256 internal constant maxTransactionAmount = TOTAL_SUPPLY / 300; // 0.33% of the total supply
     
     /**
      * @dev Set the maximum allowed balance in a wallet.
-     * 
-     * The default value is 2% of the total supply. 
-     * 
-     * NOTE: set the value to 0 to have an unlimited max.
      *
-     * IMPORTANT: This value MUST be greater than `numberOfTokensToSwapToLiquidity` set below,
-     * otherwise the liquidity swap will never be executed
      */
     uint256 internal constant maxWalletBalance = TOTAL_SUPPLY / 50; // 2% of the total supply
     
@@ -218,10 +192,10 @@ abstract contract Tokenomics {
 
     // --------------------- Fees Settings ------------------- //
 
-    // We will use this wallet for marketing purpuses.
+    // We will use this wallet for marketing purposes.
     address internal marketingAddress = 0x268B894d848df56dA7FfB318C19CC465C28E0e01;
     
-    // We will use this wallet for tournaments, giveaways and eSports financing 
+    // We will use this wallet for tournaments, giveaways, and eSports financing 
     address internal eSportsFinancingAddress = 0x118EB247A6d9AB564fFE70EE66482c3e072d93B4;
     
     // We will use this wallet for development.
@@ -230,7 +204,7 @@ abstract contract Tokenomics {
     // This is the burn address.
     address internal burnAddress = 0x0000000000000000000000000000000299792458;
     
-    // We will use this addresses for different features of our platform. Those wallets don't have rewards or fees.
+    // We will use these addresses for different features of our platform. These wallets don't have rewards or fees.
     address internal featureAddress1 = 0x5970C97aFE037a2499e787242c43Bd1d45509bd3;
     address internal featureAddress2 = 0xB4B48265FD1582305997019fbE31590BA887dE4A;
     address internal featureAddress3 = 0xF6298798018d4C5ce9A2479090A7a38Df0f5d939;
@@ -258,7 +232,6 @@ abstract contract Tokenomics {
 
     function _addFees() private {
         _addFee(FeeType.Rfi, 5, address(this) ); // 0.5% holders
-
         _addFee(FeeType.Burn, 5, burnAddress ); // 0.5% burn
         _addFee(FeeType.Liquidity, 40, address(this) ); // 4% liquidity
         _addFee(FeeType.External, 20, devAddress ); // 2% devs
@@ -281,7 +254,6 @@ abstract contract Tokenomics {
         fee.total = fee.total.add(amount);
     }
 
-    // function getCollectedFeeTotal(uint256 index) external view returns (uint256){
     function getCollectedFeeTotal(uint256 index) internal view returns (uint256){
         Fee memory fee = _getFeeStruct(index);
         return fee.total;
@@ -371,8 +343,29 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Presaleable, 
             return true;
         }
     /** Functions required by IERC20 - END **/
+    
+    /**
+     * @dev This is really a "soft" burn (total supply is not reduced). Holders
+     * get two benefits from burning tokens:
+     *
+     * 1) Tokens in the burn address increase the % of tokens held by holders 
+     *    not excluded from rewards (assuming the burn address is excluded). 
+     * 2) Tokens in the burn address cannot be sold (which in turn draining the liquidity pool). 
+     * 
+     * Holders already get % of each transaction so the value of their tokens increases (in a way). 
+     * Therefore there is really no need to do a "hard" burn (reduce the total supply). 
+     *
+     * What matters is to make sure that a large amount of tokens cannot be 
+     * sold = draining the liquidity pool = lowering the value of tokens holders own. 
+     * 
+     * For this purpose, transferring tokens to a burn address is the most appropriate way to "burn". 
+     * 
+     * There is an extra check placed into the transfer function to make sure the burn address 
+     * cannot withdraw the tokens is has (although the chance of someone 
+     * having/finding the private key is virtually zero).
+     */
 
-    function burn(uint256 amount) external {
+    function softBurn(uint256 amount) external {
 
         address sender = _msgSender();
         require(sender != address(0), "BaseRfiToken: burn from the zero address");
@@ -388,20 +381,21 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Presaleable, 
         if (_isExcludedFromRewards[sender])
             _balances[sender] = _balances[sender].sub(amount);
 
-        _burnTokens( sender, amount, reflectedAmount );
+        _softBurnTokens( sender, amount, reflectedAmount );
     }
     
     /**
      * @dev "Soft" burns the specified amount of tokens by sending them 
      * to the burn address
      */
-    function _burnTokens(address sender, uint256 tBurn, uint256 rBurn) internal {
+    function _softBurnTokens(address sender, uint256 tBurn, uint256 rBurn) internal {
 
         /**
          * @dev Do not reduce _totalSupply and/or _reflectedSupply. (soft) burning by sending
          * tokens to the burn address (which should be excluded from rewards) is sufficient
          * in RFI
          */ 
+         
         _reflectedBalances[burnAddress] = _reflectedBalances[burnAddress].add(rBurn);
         if (_isExcludedFromRewards[burnAddress])
             _balances[burnAddress] = _balances[burnAddress].add(tBurn);
@@ -508,7 +502,7 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Presaleable, 
         require(sender != address(burnAddress), "BaseRfiToken: transfer from the burn address");
         require(amount > 0, "Transfer amount must be greater than zero");
         
-        // indicates whether or not feee should be deducted from the transfer
+        // indicates whether or not fees should be deducted from the transfer
         bool takeFee = true;
 
         if ( isInPresale ){ takeFee = false; }
@@ -643,7 +637,6 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Presaleable, 
      * This is the bit of clever math which allows rfi to redistribute the fee without 
      * having to iterate through all holders. 
      * 
-     * Visit our discord at https://discord.gg/dAmr6eUTpM
      */
     function _redistribute(uint256 amount, uint256 currentRate, uint256 fee, uint256 index) internal {
         uint256 tFee = amount.mul(fee).div(FEES_DIVISOR);
@@ -673,8 +666,6 @@ abstract contract Liquifier is Ownable, Manageable {
     // PancakeSwap V2
     address private _mainnetRouterV2Address = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
     // Testnet
-    // address private _testnetRouterAddress = 0xD99D1c33F9fC3444f8101754aBC46c52416550D1;
-    // PancakeSwap Testnet = https://pancake.kiemtienonline360.com/
     address private _testnetRouterAddress = 0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3;
 
     IPancakeV2Router internal _router;
@@ -723,7 +714,7 @@ abstract contract Liquifier is Ownable, Manageable {
          * - first check if the contract has collected enough tokens to swap and liquify
          * - then check swap and liquify is enabled
          * - then make sure not to get caught in a circular liquidity event
-         * - finally, don't swap & liquify if the sender is the uniswap pair
+         * - finally, don't swap & liquify if the sender is the pancakeswap pair
          */
         if ( isOverRequiredTokenBalance && swapAndLiquifyEnabled && !inSwapAndLiquify && (sender != _pair) ){
             // TODO check if the `(sender != _pair)` is necessary because that basically
@@ -750,10 +741,10 @@ abstract contract Liquifier is Ownable, Manageable {
         uint256 half = amount.div(2);
         uint256 otherHalf = amount.sub(half);
         
-        // capture the contract's current ETH balance.
-        // this is so that we can capture exactly the amount of ETH that the
-        // swap creates, and not make the liquidity event include any ETH that
-        // has been manually sent to the contract
+        // capture the contract's current BNB balance.
+        // this is so that we can capture exactly the amount of BNB that the
+        // swap creates, and not make the liquidity event include any BNB that
+        // has been manually set to the contract
         uint256 initialBalance = address(this).balance;
         
         // swap tokens for ETH
@@ -762,7 +753,7 @@ abstract contract Liquifier is Ownable, Manageable {
         // how much ETH did we just swap into?
         uint256 newBalance = address(this).balance.sub(initialBalance);
 
-        // add liquidity to uniswap
+        // add liquidity to PancakeSwap
         _addLiquidity(otherHalf, newBalance);
         
         emit SwapAndLiquify(half, newBalance, otherHalf);
@@ -770,7 +761,7 @@ abstract contract Liquifier is Ownable, Manageable {
     
     function _swapTokensForEth(uint256 tokenAmount) private {
         
-        // generate the uniswap pair path of token -> weth
+        // generate the pancakeswap pair path of token -> weth
         address[] memory path = new address[](2);
         path[0] = address(this);
         path[1] = _router.WETH();
@@ -790,7 +781,7 @@ abstract contract Liquifier is Ownable, Manageable {
     }
     
     function _addLiquidity(uint256 tokenAmount, uint256 ethAmount) private {
-        // approve token transfer to cover all possible scenarios
+        // approve the token transfer to cover all possible scenarios
         _approveDelegate(address(this), address(_router), tokenAmount);
 
         // add the liquidity
@@ -807,14 +798,15 @@ abstract contract Liquifier is Ownable, Manageable {
             owner(),
             block.timestamp
         );
-
-        // fix the forever locked BNBs as per the certik's audit
+        
         /**
-         * The swapAndLiquify function converts half of the contractTokenBalance SafeMoon tokens to BNB. 
+         * @dev Fix issue with forever locked BNBs as per Certik's Safemoon audit:
+         *
+         * The swapAndLiquify function converts half of the contractTokenBalance tokens to BNB. 
          * For every swapAndLiquify function call, a small amount of BNB remains in the contract. 
          * This amount grows over time with the swapAndLiquify function being called throughout the life 
-         * of the contract. The Safemoon contract does not contain a method to withdraw these funds, 
-         * and the BNB will be locked in the Safemoon contract forever.
+         * of the contract. The SafeMoon contract does not contain a method to withdraw these funds, 
+         * and the BNB will be locked in the SafeMoon contract forever.
          */
         withdrawableBalance = address(this).balance;
         emit LiquidityAdded(tokenAmountSent, ethAmountSent, liquidity);
@@ -822,7 +814,7 @@ abstract contract Liquifier is Ownable, Manageable {
     
 
     /**
-    * @dev Sets the uniswapV2 pair (router & factory) for swapping and liquifying tokens
+    * @dev Sets the pancakeswapV2 pair (router & factory) for swapping and liquifying tokens
     */
     function setRouterAddress(address router) external onlyManager() {
         _setRouterAddress(router);
@@ -843,7 +835,7 @@ abstract contract Liquifier is Ownable, Manageable {
      *
      * Note: This addresses the contract flaw pointed out in the Certik Audit of Safemoon (SSL-03):
      * 
-     * The swapAndLiquify function converts half of the contractTokenBalance SafeMoon tokens to BNB. 
+     * The swapAndLiquify function converts half of the contractTokenBalance tokens to BNB. 
      * For every swapAndLiquify function call, a small amount of BNB remains in the contract. 
      * This amount grows over time with the swapAndLiquify function being called 
      * throughout the life of the contract. The Safemoon contract does not contain a method 
@@ -878,7 +870,6 @@ abstract contract Antiwhale is Tokenomics {
      *      sender's token balance and the transfer amount. An *antiwhale* mechanics can use these 
      *      values to adjust the fees total for each tx
      */
-    // function _getAntiwhaleFees(uint256 sendersBalance, uint256 amount) internal view returns (uint256){
     function _getAntiwhaleFees(uint256, uint256) internal view returns (uint256){
         return sumOfFees;
     }
@@ -889,13 +880,12 @@ abstract contract SafeToken is BaseRfiToken, Liquifier, Antiwhale {
     
     using SafeMath for uint256;
 
-    // constructor(string memory _name, string memory _symbol, uint8 _decimals){
     constructor(Env _env){
 
         initializeLiquiditySwapper(_env, maxTransactionAmount, numberOfTokensToSwapToLiquidity);
 
         // exclude the pair address from rewards - we don't want to redistribute
-        // tx fees to these two; redistribution is only for holders, dah!
+        // tx fees to these two; redistribution is only for holders.
         _exclude(_pair);
         _exclude(burnAddress);
     }
@@ -908,7 +898,6 @@ abstract contract SafeToken is BaseRfiToken, Liquifier, Antiwhale {
         return _getAntiwhaleFees(balanceOf(sender), amount); 
     }
     
-    // function _beforeTokenTransfer(address sender, address recipient, uint256 amount, bool takeFee) internal override {
     function _beforeTokenTransfer(address sender, address , uint256 , bool ) internal override {
         if ( !isInPresale ){
             uint256 contractTokenBalance = balanceOf(address(this));
@@ -930,7 +919,7 @@ abstract contract SafeToken is BaseRfiToken, Liquifier, Antiwhale {
                 _redistribute( amount, currentRate, value, index );
             }
             else if ( _balances[burnAddress] <= MAX_BURN && name == FeeType.Burn ){
-                _burn( amount, currentRate, value, index );
+                _softBurn( amount, currentRate, value, index );
             }
             else if ( _balances[burnAddress] > MAX_BURN && name == FeeType.Burn ){
                 _redistribute( amount, currentRate, value, index );
@@ -941,11 +930,11 @@ abstract contract SafeToken is BaseRfiToken, Liquifier, Antiwhale {
         }
     }
 
-    function _burn(uint256 amount, uint256 currentRate, uint256 fee, uint256 index) private {
+    function _softBurn(uint256 amount, uint256 currentRate, uint256 fee, uint256 index) private {
         uint256 tBurn = amount.mul(fee).div(FEES_DIVISOR);
         uint256 rBurn = tBurn.mul(currentRate);
 
-        _burnTokens(address(this), tBurn, rBurn);
+        _softBurnTokens(address(this), tBurn, rBurn);
         _addFeeCollectedAmount(index, tBurn);
     }
 
@@ -970,7 +959,7 @@ abstract contract SafeToken is BaseRfiToken, Liquifier, Antiwhale {
 contract DESP is SafeToken{
 
     constructor() SafeToken(Env.MainnetV2){
-        // pre-approve the initial liquidity supply (to safe a bit of time)
+        // pre-approve the initial liquidity supply (to save a bit of time)
         _approve(owner(),address(_router), ~uint256(0));
     }
 }
