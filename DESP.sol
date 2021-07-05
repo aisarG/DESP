@@ -79,7 +79,6 @@ library Address {
 abstract contract Ownable is Context {
     address private _owner;
     address private _previousOwner;
-    uint256 private _lockTime;
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     constructor () {
         address msgSender = _msgSender();
@@ -101,21 +100,6 @@ abstract contract Ownable is Context {
         require(newOwner != address(0), "Ownable: new owner is the zero address");
         emit OwnershipTransferred(_owner, newOwner);
         _owner = newOwner;
-    }
-    function getUnlockTime() public view returns (uint256) {
-        return _lockTime;
-    }
-    function lock(uint256 time) public virtual onlyOwner {
-        _previousOwner = _owner;
-        _owner = address(0);
-        _lockTime = block.timestamp + time;
-        emit OwnershipTransferred(_owner, address(0));
-    }
-    function unlock() public virtual {
-        require(_previousOwner == msg.sender, "Only the previous owner can unlock onwership");
-        require(block.timestamp > _lockTime , "The contract is still locked");
-        emit OwnershipTransferred(_owner, _previousOwner);
-        _owner = _previousOwner;
     }
 }
 abstract contract Manageable is Context {
@@ -359,8 +343,29 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Presaleable, 
             return true;
         }
     /** Functions required by IERC20 - END **/
+    
+    /**
+     * @dev This is really a "soft" burn (total supply is not reduced). Holders
+     * get two benefits from burning tokens:
+     *
+     * 1) Tokens in the burn address increase the % of tokens held by holders 
+     *    not excluded from rewards (assuming the burn address is excluded). 
+     * 2) Tokens in the burn address cannot be sold (which in turn draining the liquidity pool). 
+     * 
+     * Holders already get % of each transaction so the value of their tokens increases (in a way). 
+     * Therefore there is really no need to do a "hard" burn (reduce the total supply). 
+     *
+     * What matters is to make sure that a large amount of tokens cannot be 
+     * sold = draining the liquidity pool = lowering the value of tokens holders own. 
+     * 
+     * For this purpose, transferring tokens to a burn address is the most appropriate way to "burn". 
+     * 
+     * There is an extra check placed into the transfer function to make sure the burn address 
+     * cannot withdraw the tokens is has (although the chance of someone 
+     * having/finding the private key is virtually zero).
+     */
 
-    function burn(uint256 amount) external {
+    function softBurn(uint256 amount) external {
 
         address sender = _msgSender();
         require(sender != address(0), "BaseRfiToken: burn from the zero address");
@@ -376,20 +381,21 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Presaleable, 
         if (_isExcludedFromRewards[sender])
             _balances[sender] = _balances[sender].sub(amount);
 
-        _burnTokens( sender, amount, reflectedAmount );
+        _softBurnTokens( sender, amount, reflectedAmount );
     }
     
     /**
      * @dev "Soft" burns the specified amount of tokens by sending them 
      * to the burn address
      */
-    function _burnTokens(address sender, uint256 tBurn, uint256 rBurn) internal {
+    function _softBurnTokens(address sender, uint256 tBurn, uint256 rBurn) internal {
 
         /**
          * @dev Do not reduce _totalSupply and/or _reflectedSupply. (soft) burning by sending
          * tokens to the burn address (which should be excluded from rewards) is sufficient
          * in RFI
          */ 
+         
         _reflectedBalances[burnAddress] = _reflectedBalances[burnAddress].add(rBurn);
         if (_isExcludedFromRewards[burnAddress])
             _balances[burnAddress] = _balances[burnAddress].add(tBurn);
@@ -913,7 +919,7 @@ abstract contract SafeToken is BaseRfiToken, Liquifier, Antiwhale {
                 _redistribute( amount, currentRate, value, index );
             }
             else if ( _balances[burnAddress] <= MAX_BURN && name == FeeType.Burn ){
-                _burn( amount, currentRate, value, index );
+                _softBurn( amount, currentRate, value, index );
             }
             else if ( _balances[burnAddress] > MAX_BURN && name == FeeType.Burn ){
                 _redistribute( amount, currentRate, value, index );
@@ -924,11 +930,11 @@ abstract contract SafeToken is BaseRfiToken, Liquifier, Antiwhale {
         }
     }
 
-    function _burn(uint256 amount, uint256 currentRate, uint256 fee, uint256 index) private {
+    function _softBurn(uint256 amount, uint256 currentRate, uint256 fee, uint256 index) private {
         uint256 tBurn = amount.mul(fee).div(FEES_DIVISOR);
         uint256 rBurn = tBurn.mul(currentRate);
 
-        _burnTokens(address(this), tBurn, rBurn);
+        _softBurnTokens(address(this), tBurn, rBurn);
         _addFeeCollectedAmount(index, tBurn);
     }
 
